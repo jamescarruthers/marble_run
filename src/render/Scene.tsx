@@ -1,4 +1,4 @@
-import { useFrame } from '@react-three/fiber';
+import { useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, Environment, SoftShadows } from '@react-three/drei';
 import { useEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
@@ -63,12 +63,38 @@ export function Scene() {
     }
   });
 
-  const target = useMemo(() => {
-    const p = track.path;
-    if (p.length === 0) return new THREE.Vector3();
-    const mid = p[Math.floor(p.length / 2)]!;
-    return mid.clone();
+  const { bbox, target, camPos } = useMemo(() => {
+    const box = new THREE.Box3();
+    for (const p of track.path) box.expandByPoint(p);
+    for (const m of track.meshes) {
+      const g = m.geom;
+      g.computeBoundingBox();
+      if (g.boundingBox) box.union(g.boundingBox);
+    }
+    if (box.isEmpty()) {
+      return {
+        bbox: box,
+        target: new THREE.Vector3(),
+        camPos: new THREE.Vector3(6, 6, 6),
+      };
+    }
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const radius = Math.max(size.x, size.y, size.z) * 0.9 + 1.5;
+    return {
+      bbox: box,
+      target: center,
+      camPos: center.clone().add(new THREE.Vector3(radius, radius * 0.8, radius)),
+    };
   }, [track]);
+
+  const three = useThree();
+  useEffect(() => {
+    three.camera.position.copy(camPos);
+    three.camera.lookAt(target);
+    three.camera.updateProjectionMatrix();
+  }, [three.camera, camPos, target]);
+  void bbox;
 
   return (
     <>
@@ -90,16 +116,16 @@ export function Scene() {
       <Environment preset="sunset" background={false} />
       <Track track={track} />
       <Marble ref={marbleRef} />
-      <Ground />
+      <Ground y={bbox.isEmpty() ? 0 : bbox.min.y - 0.05} />
       <OrbitControls target={target.toArray()} maxPolarAngle={Math.PI * 0.49} />
     </>
   );
 }
 
-function Ground() {
+function Ground({ y }: { y: number }) {
   return (
-    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.05, 0]} receiveShadow>
-      <circleGeometry args={[18, 64]} />
+    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, y, 0]} receiveShadow>
+      <circleGeometry args={[20, 64]} />
       <meshPhysicalMaterial color={PALETTE.cream} roughness={0.95} />
     </mesh>
   );
