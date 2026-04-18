@@ -10,35 +10,43 @@ const tmpD = new THREE.Vector3();
  * Trilinearly interpolates a point inside the unit cube [-0.5, 0.5]^3
  * into the prism defined by the cell's bottom and top quads.
  *
- * Unit-cube convention: x = W→E (quad edge 3→0 bottom → edge 3→0 top), y = up (layer axis),
- * z = S→N. Face labels: N = +z, E = +x, S = -z, W = -x, T = +y, B = -y.
+ * Unit-cube face convention (must match the socket/face labels):
+ *   N = +z (face index 0)  →  prism side[0] = edge (v0 → v1)
+ *   E = +x (face index 1)  →  prism side[1] = edge (v1 → v2)
+ *   S = −z (face index 2)  →  prism side[2] = edge (v2 → v3)
+ *   W = −x (face index 3)  →  prism side[3] = edge (v3 → v0)
+ *   T = +y, B = −y.
  *
- * bottomQuad CCW order from above: v0 (SW), v1 (SE), v2 (NE), v3 (NW).
+ * To keep the "unit cube face i → prism side i" mapping consistent, the
+ * bilinear parameters are chosen so that (u=0, v=0) hits v0, (u=1, v=0) hits v1,
+ * (u=1, v=1) hits v2, (u=0, v=1) hits v3. That requires v to run N → S, i.e.
+ * v = 0.5 − p.z (not p.z + 0.5). Without this, every tile's N-face anchor
+ * warps to the prism's S-side edge, so no two neighbouring tubes meet.
  */
 export function warp(p: THREE.Vector3, cell: PrismCell, out: THREE.Vector3 = new THREE.Vector3()): THREE.Vector3 {
   const u = p.x + 0.5; // 0..1 (W→E)
-  const v = p.z + 0.5; // 0..1 (S→N)
+  const v = 0.5 - p.z; // 0..1 (N→S)
   const h = p.y + 0.5; // 0..1 (B→T)
 
   const [b0, b1, b2, b3] = cell.bottomQuad;
   const [t0, t1, t2, t3] = cell.topQuad;
 
-  // bilerp bottom
-  tmpA.set(b0[0], b0[2], b0[1]); // (x,y,z) → three js (x, z_world→y up, y_world→z). In our grid, z is up; convert.
-  tmpB.set(b1[0], b1[2], b1[1]);
-  tmpC.set(b2[0], b2[2], b2[1]);
-  tmpD.set(b3[0], b3[2], b3[1]);
-  const sx1 = tmpA.lerp(tmpB, u);
-  const nx1 = tmpD.lerp(tmpC, u);
-  const bot = sx1.lerp(nx1, v).clone();
+  // grid coords are [x, y, z_up]; three.js wants (x, y_up, z). Rewrite with y=z_grid.
+  tmpA.set(b0[0], b0[2], b0[1]); // v0  → (u=0, v=0)
+  tmpB.set(b1[0], b1[2], b1[1]); // v1  → (u=1, v=0)
+  tmpC.set(b2[0], b2[2], b2[1]); // v2  → (u=1, v=1)
+  tmpD.set(b3[0], b3[2], b3[1]); // v3  → (u=0, v=1)
+  const ab = tmpA.lerp(tmpB, u); // v=0 edge  (v0 → v1)
+  const dc = tmpD.lerp(tmpC, u); // v=1 edge  (v3 → v2)
+  const bot = ab.lerp(dc, v).clone();
 
   tmpA.set(t0[0], t0[2], t0[1]);
   tmpB.set(t1[0], t1[2], t1[1]);
   tmpC.set(t2[0], t2[2], t2[1]);
   tmpD.set(t3[0], t3[2], t3[1]);
-  const sx2 = tmpA.lerp(tmpB, u);
-  const nx2 = tmpD.lerp(tmpC, u);
-  const top = sx2.lerp(nx2, v);
+  const abT = tmpA.lerp(tmpB, u);
+  const dcT = tmpD.lerp(tmpC, u);
+  const top = abT.lerp(dcT, v);
 
   out.copy(bot).lerp(top, h);
   return out;
