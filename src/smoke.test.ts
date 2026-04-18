@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildGrid } from './grid';
-import { AUTHORED_TILES, driveGenerate, expandTiles } from './wfc';
+import { driveGenerate } from './wfc';
 import { buildTrack } from './geometry';
 import { serializeMJCF } from './physics';
 
@@ -13,17 +13,18 @@ describe('grid pipeline', () => {
 });
 
 describe('driven generator', () => {
-  it('produces a connected track for several seeds', () => {
-    const tiles = expandTiles(AUTHORED_TILES);
+  it('produces a connected path across several seeds', () => {
     let solvedCount = 0;
     for (let seed = 1; seed <= 8; seed++) {
       const g = buildGrid(seed, { chunkRadius: 2, layers: 3 });
-      const res = driveGenerate(g, tiles);
+      const res = driveGenerate(g);
       if (!res) continue;
       solvedCount++;
-      expect(res.collapsed.length).toBe(g.cells.length);
-      const track = buildTrack(g, tiles, res.collapsed, res.startCellId, res.endCellId);
+      expect(res.pathCellIds.length).toBeGreaterThanOrEqual(2);
+      const track = buildTrack(g, res.pathCellIds);
       expect(track.path.length).toBeGreaterThan(2);
+      const pos = track.tube.attributes.position!;
+      expect(pos.count).toBeGreaterThan(0);
       const xml = serializeMJCF(track);
       expect(xml).toContain('<mujoco');
     }

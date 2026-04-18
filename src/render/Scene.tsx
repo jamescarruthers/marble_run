@@ -4,13 +4,28 @@ import { useEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { useStore } from '../store';
 import { buildGrid } from '../grid';
-import { expandTiles, AUTHORED_TILES, driveGenerate } from '../wfc';
-import { buildTrack } from '../geometry';
+import { driveGenerate } from '../wfc';
+import { buildTrack, TrackBuild } from '../geometry';
 import { Track } from './Track';
 import { Marble } from './Marble';
 import { Sky } from './Sky';
 import { KinematicEngine } from '../physics/engine';
 import { MARBLE_RADIUS, PALETTE } from '../constants';
+
+function emptyTrack(): TrackBuild {
+  const fallback = [new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 0)];
+  const curve = new THREE.CatmullRomCurve3(fallback);
+  const tube = new THREE.TubeGeometry(curve, 2, 0.05, 6, false);
+  return {
+    tube,
+    startBell: new THREE.BufferGeometry(),
+    endCup: new THREE.BufferGeometry(),
+    path: fallback,
+    startPos: fallback[0]!.clone(),
+    endPos: fallback[1]!.clone(),
+    pathCellCount: 0,
+  };
+}
 
 export function Scene() {
   const seed = useStore((s) => s.seed);
@@ -20,21 +35,14 @@ export function Scene() {
 
   const { track, engine } = useMemo(() => {
     const grid = buildGrid(seed);
-    const tiles = expandTiles(AUTHORED_TILES);
-    const result = driveGenerate(grid, tiles);
+    const result = driveGenerate(grid);
     if (!result) {
-      console.warn('WFC solve failed after restarts; rendering empty track.');
-      return {
-        track: { meshes: [], path: [], startPos: new THREE.Vector3(), endPos: new THREE.Vector3(), pathCellCount: 0 },
-        engine: new KinematicEngine(
-          { meshes: [], path: [new THREE.Vector3(), new THREE.Vector3(0, -1, 0)], startPos: new THREE.Vector3(), endPos: new THREE.Vector3(0, -1, 0), pathCellCount: 0 },
-          MARBLE_RADIUS,
-        ),
-      };
+      console.warn('driveGenerate failed; rendering fallback.');
+      const t = emptyTrack();
+      return { track: t, engine: new KinematicEngine(t, MARBLE_RADIUS) };
     }
-    const trackBuild = buildTrack(grid, tiles, result.collapsed, result.startCellId, result.endCellId);
-    const eng = new KinematicEngine(trackBuild, MARBLE_RADIUS);
-    return { track: trackBuild, engine: eng };
+    const t = buildTrack(grid, result.pathCellIds);
+    return { track: t, engine: new KinematicEngine(t, MARBLE_RADIUS) };
   }, [seed]);
 
   const marbleRef = useRef<THREE.Mesh>(null!);
@@ -47,9 +55,7 @@ export function Scene() {
     if (runState === 'idle') engine.reset();
   }, [runState, engine]);
 
-  useEffect(() => {
-    return () => engine.dispose();
-  }, [engine]);
+  useEffect(() => () => engine.dispose(), [engine]);
 
   useFrame((_, dt) => {
     if (runState === 'running') {
@@ -66,25 +72,18 @@ export function Scene() {
   const { bbox, target, camPos } = useMemo(() => {
     const box = new THREE.Box3();
     for (const p of track.path) box.expandByPoint(p);
-    for (const m of track.meshes) {
-      const g = m.geom;
-      g.computeBoundingBox();
-      if (g.boundingBox) box.union(g.boundingBox);
-    }
+    track.tube.computeBoundingBox();
+    if (track.tube.boundingBox) box.union(track.tube.boundingBox);
     if (box.isEmpty()) {
-      return {
-        bbox: box,
-        target: new THREE.Vector3(),
-        camPos: new THREE.Vector3(6, 6, 6),
-      };
+      return { bbox: box, target: new THREE.Vector3(), camPos: new THREE.Vector3(6, 6, 6) };
     }
     const center = box.getCenter(new THREE.Vector3());
     const size = box.getSize(new THREE.Vector3());
-    const radius = Math.max(size.x, size.y, size.z) * 0.9 + 1.5;
+    const radius = Math.max(size.x, size.y, size.z) * 1.1 + 1.5;
     return {
       bbox: box,
       target: center,
-      camPos: center.clone().add(new THREE.Vector3(radius, radius * 0.8, radius)),
+      camPos: center.clone().add(new THREE.Vector3(radius, radius * 0.6, radius)),
     };
   }, [track]);
 
@@ -94,7 +93,6 @@ export function Scene() {
     three.camera.lookAt(target);
     three.camera.updateProjectionMatrix();
   }, [three.camera, camPos, target]);
-  void bbox;
 
   return (
     <>
@@ -108,10 +106,10 @@ export function Scene() {
         castShadow
         shadow-mapSize-width={1024}
         shadow-mapSize-height={1024}
-        shadow-camera-left={-10}
-        shadow-camera-right={10}
-        shadow-camera-top={10}
-        shadow-camera-bottom={-10}
+        shadow-camera-left={-12}
+        shadow-camera-right={12}
+        shadow-camera-top={12}
+        shadow-camera-bottom={-12}
       />
       <Environment preset="sunset" background={false} />
       <Track track={track} />
