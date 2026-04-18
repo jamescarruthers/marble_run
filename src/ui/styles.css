@@ -1,0 +1,59 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --pink: #ffc2d4;
+  --mint: #b6e8d8;
+  --butter: #ffe8a3;
+  --sky: #bfdff7;
+  --sky-deep: #d9c7f5;
+  --lavender: #e2d4f0;
+  --cream: #fff7ec;
+  --bark: #6b5b73;
+  --shadow: #2f2440;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+  font-family: 'Nunito', sans-serif;
+  color: var(--bark);
+  background: linear-gradient(180deg, var(--sky) 0%, var(--sky-deep) 100%);
+  overflow: hidden;
+}
+
+.chunky-btn {
+  @apply font-display text-[20px] font-semibold px-6 rounded-3xl;
+  height: 64px;
+  background: var(--cream);
+  color: var(--bark);
+  border: 2px solid rgba(107, 91, 115, 0.12);
+  box-shadow: 0 6px 0 rgba(107, 91, 115, 0.25);
+  transition: transform 80ms ease, box-shadow 80ms ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.chunky-btn:active {
+  transform: translateY(4px);
+  box-shadow: 0 2px 0 rgba(107, 91, 115, 0.25);
+}
+
+.chunky-btn.primary {
+  background: var(--pink);
+}
+.chunky-btn.accent {
+  background: var(--butter);
+}
+
+.card {
+  background: var(--cream);
+  border-radius: 1.5rem;
+  box-shadow: 0 6px 0 rgba(107, 91, 115, 0.2);
+  padding: 1rem 1.25rem;
+}
