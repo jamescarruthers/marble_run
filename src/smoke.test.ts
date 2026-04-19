@@ -19,8 +19,8 @@ describe('cube grid', () => {
 describe('driven generator', () => {
   it('produces a valid assignment for several seeds', () => {
     let solved = 0;
-    for (let seed = 1; seed <= 8; seed++) {
-      const g = buildGrid(seed, { width: 4, depth: 4, layers: 3 });
+    for (let seed = 1; seed <= 10; seed++) {
+      const g = buildGrid(seed, { width: 6, depth: 6, layers: 1 });
       const res = driveGenerate(g);
       if (!res) continue;
       solved++;
@@ -31,6 +31,6 @@ describe('driven generator', () => {
       const xml = serializeMJCF(track);
       expect(xml).toContain('<mujoco');
     }
-    expect(solved).toBeGreaterThan(4);
+    expect(solved).toBeGreaterThanOrEqual(8);
   });
 });

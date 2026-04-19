@@ -1,4 +1,4 @@
-import { GRID_SCALE } from '../constants';
+import { GRID_DEFAULTS, GRID_SCALE } from '../constants';
 
 export interface GridCell {
   id: number;
@@ -30,7 +30,7 @@ export interface GridOptions {
   scale?: number;
 }
 
-const DEFAULTS = { width: 5, depth: 5, layers: 3 };
+const DEFAULTS = GRID_DEFAULTS;
 
 /**
  * Build a simple W × D × Layers axis-aligned cube grid. Layer 0 is the topmost
