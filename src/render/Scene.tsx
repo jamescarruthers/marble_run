@@ -9,20 +9,18 @@ import { buildTrack, TrackBuild } from '../geometry';
 import { Track } from './Track';
 import { Marble } from './Marble';
 import { Sky } from './Sky';
-import { Engine, KinematicEngine, RapierEngine } from '../physics';
+import { Engine, NullEngine, RapierEngine, WheelState } from '../physics';
 import { MARBLE_RADIUS, PALETTE } from '../constants';
+import { wheelMaterial } from './materials';
 
 function emptyTrack(): TrackBuild {
-  const fallback = [new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 0)];
-  const curve = new THREE.CatmullRomCurve3(fallback);
-  const tube = new THREE.TubeGeometry(curve, 2, 0.05, 6, false);
   return {
-    tube,
-    startBell: new THREE.BufferGeometry(),
-    endCup: new THREE.BufferGeometry(),
-    path: fallback,
-    startPos: fallback[0]!.clone(),
-    endPos: fallback[1]!.clone(),
+    meshes: [],
+    collisionGeom: new THREE.BufferGeometry(),
+    dynamics: [],
+    startPos: new THREE.Vector3(0, 2, 0),
+    endPos: new THREE.Vector3(0, 0, 0),
+    path: [new THREE.Vector3(0, 2, 0), new THREE.Vector3(0, 0, 0)],
     pathCellCount: 0,
   };
 }
@@ -36,24 +34,26 @@ export function Scene() {
   const { track, engine } = useMemo(() => {
     const grid = buildGrid(seed);
     const result = driveGenerate(grid);
-    const t = result ? buildTrack(grid, result.pathCellIds) : emptyTrack();
+    const t = result
+      ? buildTrack(grid, result.assignments, result.pathCellIds, result.startCellId, result.endCellId)
+      : emptyTrack();
     let eng: Engine;
     try {
       eng = new RapierEngine(t, MARBLE_RADIUS);
     } catch (err) {
-      // If WASM hasn't loaded yet (shouldn't happen because main.tsx awaits it)
-      // or the trough mesh was degenerate, fall back to the kinematic slider.
-      console.warn('Rapier engine failed, falling back to kinematic:', err);
-      eng = new KinematicEngine(t, MARBLE_RADIUS);
+      console.warn('Rapier engine failed:', err);
+      eng = new NullEngine(t.startPos);
     }
     return { track: t, engine: eng };
   }, [seed]);
 
   const marbleRef = useRef<THREE.Mesh>(null!);
+  const wheelRefs = useRef<THREE.Mesh[]>([]);
   const scratch = useMemo(
     () => ({ pos: new THREE.Vector3(), quat: new THREE.Quaternion() }),
     [],
   );
+  const wheelScratch = useRef<WheelState[]>([]);
 
   useEffect(() => {
     if (runState === 'idle') engine.reset();
@@ -71,23 +71,36 @@ export function Scene() {
       marbleRef.current.position.copy(scratch.pos);
       marbleRef.current.quaternion.copy(scratch.quat);
     }
+    if (engine instanceof RapierEngine) {
+      engine.readWheels(wheelScratch.current);
+      for (let i = 0; i < wheelScratch.current.length; i++) {
+        const m = wheelRefs.current[i];
+        const s = wheelScratch.current[i];
+        if (m && s) {
+          m.position.copy(s.position);
+          m.quaternion.copy(s.quaternion);
+        }
+      }
+    }
   });
 
   const { bbox, target, camPos } = useMemo(() => {
     const box = new THREE.Box3();
     for (const p of track.path) box.expandByPoint(p);
-    track.tube.computeBoundingBox();
-    if (track.tube.boundingBox) box.union(track.tube.boundingBox);
+    for (const m of track.meshes) {
+      m.geom.computeBoundingBox();
+      if (m.geom.boundingBox) box.union(m.geom.boundingBox);
+    }
     if (box.isEmpty()) {
-      return { bbox: box, target: new THREE.Vector3(), camPos: new THREE.Vector3(6, 6, 6) };
+      return { bbox: box, target: new THREE.Vector3(), camPos: new THREE.Vector3(8, 8, 8) };
     }
     const center = box.getCenter(new THREE.Vector3());
     const size = box.getSize(new THREE.Vector3());
-    const radius = Math.max(size.x, size.y, size.z) * 1.1 + 1.5;
+    const radius = Math.max(size.x, size.y, size.z) * 1.1 + 2;
     return {
       bbox: box,
       target: center,
-      camPos: center.clone().add(new THREE.Vector3(radius, radius * 0.6, radius)),
+      camPos: center.clone().add(new THREE.Vector3(radius, radius * 0.55, radius)),
     };
   }, [track]);
 
@@ -110,13 +123,27 @@ export function Scene() {
         castShadow
         shadow-mapSize-width={1024}
         shadow-mapSize-height={1024}
-        shadow-camera-left={-12}
-        shadow-camera-right={12}
-        shadow-camera-top={12}
-        shadow-camera-bottom={-12}
+        shadow-camera-left={-14}
+        shadow-camera-right={14}
+        shadow-camera-top={14}
+        shadow-camera-bottom={-14}
       />
       <Environment preset="sunset" background={false} />
       <Track track={track} />
+      {track.dynamics.map((d, i) =>
+        d.kind === 'wheel' ? (
+          <mesh
+            key={i}
+            ref={(el) => {
+              if (el) wheelRefs.current[i] = el;
+            }}
+            geometry={d.visual}
+            material={wheelMaterial}
+            castShadow
+            receiveShadow
+          />
+        ) : null,
+      )}
       <Marble ref={marbleRef} />
       <Ground y={bbox.isEmpty() ? 0 : bbox.min.y - 0.05} />
       <OrbitControls target={target.toArray()} maxPolarAngle={Math.PI * 0.49} />
@@ -127,7 +154,7 @@ export function Scene() {
 function Ground({ y }: { y: number }) {
   return (
     <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, y, 0]} receiveShadow>
-      <circleGeometry args={[20, 64]} />
+      <circleGeometry args={[30, 64]} />
       <meshPhysicalMaterial color={PALETTE.cream} roughness={0.95} />
     </mesh>
   );

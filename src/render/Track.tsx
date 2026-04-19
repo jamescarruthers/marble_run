@@ -1,5 +1,5 @@
 import { TrackBuild } from '../geometry';
-import { endMaterial, startMaterial, trackMaterial } from './materials';
+import { materialForParent } from './materials';
 
 interface Props {
   track: TrackBuild;
@@ -8,9 +8,15 @@ interface Props {
 export function Track({ track }: Props) {
   return (
     <group>
-      <mesh geometry={track.tube} material={trackMaterial} castShadow receiveShadow />
-      <mesh geometry={track.startBell} material={startMaterial} castShadow receiveShadow />
-      <mesh geometry={track.endCup} material={endMaterial} castShadow receiveShadow />
+      {track.meshes.map((m, i) => (
+        <mesh
+          key={i}
+          geometry={m.geom}
+          material={materialForParent(m.parent)}
+          castShadow
+          receiveShadow
+        />
+      ))}
     </group>
   );
 }
