@@ -16,19 +16,19 @@ export interface TrackBuild {
   pathCellCount: number;
 }
 
-const TUBE_RADIUS = 0.09;
+const TROUGH_RADIUS = 0.15;
+/** How far below the curve centre the marble rests, in world units. */
+export const MARBLE_SIT_OFFSET = TROUGH_RADIUS * 0.55;
 
 /**
- * Build a single continuous tube through the centres of the cells in `pathCellIds`.
- * This intentionally replaces the earlier tile-warp pipeline: its per-cell
- * authored meshes were hard to keep aligned across irregular prisms and the
- * result didn't read as a connected track. A tube through cell centres does.
+ * Build a single continuous open-top trough along the BFS-walked path through
+ * the grid's cell centres. The trough is half a tube (rim at the top, open so
+ * the marble is visible) swept along a Catmull-Rom curve. Frames are built
+ * from world-up rather than Frenet so the rim stays flat as the track twists.
  */
 export function buildTrack(grid: Grid3D, pathCellIds: number[]): TrackBuild {
   const points = pathCellIds.map((id) => cellWorldCentre(grid, id));
 
-  // Lift the first and last points a touch above their cells so the bell/cup
-  // decorations have room, and slope the second-to-last point toward the cup.
   if (points.length >= 1) {
     points[0] = points[0]!.clone().add(new THREE.Vector3(0, 0.25, 0));
   }
@@ -37,20 +37,16 @@ export function buildTrack(grid: Grid3D, pathCellIds: number[]): TrackBuild {
     points[points.length - 1] = last.clone().add(new THREE.Vector3(0, 0.15, 0));
   }
 
-  // Build the main tube. CatmullRomCurve3 with 'chordal' parameterisation copes
-  // well with irregular spacing.
   const curve = new THREE.CatmullRomCurve3(points, false, 'chordal', 0.5);
-  const segments = Math.max(16, pathCellIds.length * 10);
-  const tube = new THREE.TubeGeometry(curve, segments, TUBE_RADIUS, 10, false);
+  const segments = Math.max(24, pathCellIds.length * 12);
+  const tube = buildTrough(curve, segments, TROUGH_RADIUS, 12);
 
-  // Decorative endpoints.
   const startBell = makeBell();
   startBell.translate(points[0]!.x, points[0]!.y, points[0]!.z);
   const endCup = makeCup();
   const endP = points[points.length - 1]!;
   endCup.translate(endP.x, endP.y - 0.05, endP.z);
 
-  // For the physics/marble we reuse the same curve sample so it follows exactly.
   const marblePath = curve.getSpacedPoints(segments);
 
   return {
@@ -62,6 +58,77 @@ export function buildTrack(grid: Grid3D, pathCellIds: number[]): TrackBuild {
     endPos: endP.clone(),
     pathCellCount: pathCellIds.length,
   };
+}
+
+/**
+ * Sweep a half-circle cross-section (open at the top) along `curve`. Frames
+ * are built from world-up so the rim stays horizontal even on sloped sections.
+ * If the tangent is nearly vertical we fall back to world-X for the reference
+ * so the cross product is well-conditioned.
+ */
+function buildTrough(
+  curve: THREE.CatmullRomCurve3,
+  tubular: number,
+  radius: number,
+  radial: number,
+): THREE.BufferGeometry {
+  const positions = new Float32Array((tubular + 1) * (radial + 1) * 3);
+  const normals = new Float32Array((tubular + 1) * (radial + 1) * 3);
+  const indices: number[] = [];
+
+  const tmpT = new THREE.Vector3();
+  const tmpU = new THREE.Vector3();
+  const tmpB = new THREE.Vector3();
+  const tmpN = new THREE.Vector3();
+  const tmpP = new THREE.Vector3();
+  const worldUp = new THREE.Vector3(0, 1, 0);
+  const worldX = new THREE.Vector3(1, 0, 0);
+
+  for (let i = 0; i <= tubular; i++) {
+    const u = i / tubular;
+    curve.getPointAt(u, tmpP);
+    curve.getTangentAt(u, tmpT).normalize();
+    // reference up: world up unless the tangent is too close to it
+    tmpU.copy(Math.abs(tmpT.dot(worldUp)) > 0.95 ? worldX : worldUp);
+    tmpB.crossVectors(tmpT, tmpU).normalize();      // "right"
+    tmpN.crossVectors(tmpB, tmpT).normalize();      // "up" for this slice
+    for (let j = 0; j <= radial; j++) {
+      // angle sweeps PI → 2PI so we trace the bottom half: left rim → bottom → right rim.
+      const a = Math.PI + (j / radial) * Math.PI;
+      const c = Math.cos(a);
+      const s = Math.sin(a);
+      const nx = c * tmpB.x + s * tmpN.x;
+      const ny = c * tmpB.y + s * tmpN.y;
+      const nz = c * tmpB.z + s * tmpN.z;
+      const idx = (i * (radial + 1) + j) * 3;
+      positions[idx] = tmpP.x + radius * nx;
+      positions[idx + 1] = tmpP.y + radius * ny;
+      positions[idx + 2] = tmpP.z + radius * nz;
+      // Normal points *inward* (toward the curve) so the inside of the trough
+      // is lit — that's the side the user actually sees.
+      normals[idx] = -nx;
+      normals[idx + 1] = -ny;
+      normals[idx + 2] = -nz;
+    }
+  }
+
+  for (let i = 0; i < tubular; i++) {
+    for (let j = 0; j < radial; j++) {
+      const a = i * (radial + 1) + j;
+      const b = (i + 1) * (radial + 1) + j;
+      const c = (i + 1) * (radial + 1) + (j + 1);
+      const d = i * (radial + 1) + (j + 1);
+      // wind so the inward-facing side is front — matches the inverted normals.
+      indices.push(a, d, b);
+      indices.push(b, d, c);
+    }
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  g.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+  g.setIndex(indices);
+  return g;
 }
 
 function cellWorldCentre(grid: Grid3D, cellId: number): THREE.Vector3 {

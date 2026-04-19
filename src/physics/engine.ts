@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { TrackBuild } from '../geometry';
+import { MARBLE_SIT_OFFSET, TrackBuild } from '../geometry';
 
 export interface Engine {
   reset(): void;
@@ -62,8 +62,9 @@ export class KinematicEngine implements Engine {
     }
     const u = Math.min(0.999, this.s / this.totalLen);
     this.curve.getPointAt(u, out.pos);
-    // lift slightly so the marble sits atop the tube
-    out.pos.y += this.marbleRadius * 0.3;
+    // Sink to the bottom of the open trough so the marble rides visibly
+    // inside it, with its bottom touching the floor.
+    out.pos.y -= MARBLE_SIT_OFFSET - this.marbleRadius;
     out.quat.copy(this.accumQuat);
   }
 

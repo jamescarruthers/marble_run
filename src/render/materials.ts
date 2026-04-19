@@ -7,6 +7,9 @@ export const trackMaterial = new THREE.MeshPhysicalMaterial({
   clearcoat: 0.3,
   clearcoatRoughness: 0.8,
   sheen: 0.2,
+  // Trough is open on top and the user sees the concave inside; render both faces
+  // so the inner surface also catches light.
+  side: THREE.DoubleSide,
 });
 
 export const solidMaterial = new THREE.MeshPhysicalMaterial({
