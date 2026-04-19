@@ -1,6 +1,6 @@
-import { Grid3D, PrismCell } from '../grid';
+import { Grid3D } from '../grid';
+import { PieceName } from '../geometry/pieces';
 import { rngFrom, Rng } from '../util/rng';
-import { PIECE_BY_NAME, PieceName } from '../geometry/pieces';
 import { DIR } from './sockets';
 
 export interface CellAssignment {
@@ -9,87 +9,83 @@ export interface CellAssignment {
 }
 
 export interface DriveResult {
-  /** One assignment per cell in the grid. Non-path cells are EMPTY. */
   assignments: CellAssignment[];
-  /** Cells visited by the marble path, in order. */
   pathCellIds: number[];
   startCellId: number;
   endCellId: number;
 }
 
-const EMPTY_ASSIGN: CellAssignment = { name: 'EMPTY', rotation: 0 };
+const EMPTY: CellAssignment = { name: 'EMPTY', rotation: 0 };
 
-/** Driven generator: walk a BFS path through the grid, assign an authored piece
- *  + rotation to each path cell so the entry/exit faces match the walk, and
- *  leave every other cell as EMPTY. No WFC needed because EMPTY is compatible
- *  with everything and the path is the only part we care about visually.
+/**
+ * BFS a path from a random top-layer cell to a random bottom-layer cell, then
+ * pick (piece, rotation) for each path cell so entry/exit faces line up with
+ * the walk. Horizontal→horizontal uses STRAIGHT/CURVE_L/CURVE_R; any step
+ * between layers gets a DROP (down-only — the BFS never moves up).
  */
 export function driveGenerate(grid: Grid3D): DriveResult | null {
   const rng = rngFrom(grid.seed ^ 0x9e3779b9);
+  const topCells = grid.cells.filter((c) => c.iy === 0);
+  const botCells = grid.cells.filter((c) => c.iy === grid.layers - 1);
+  if (!topCells.length || !botCells.length) return null;
 
-  const topCandidates = grid.cells.filter(
-    (c) => c.layer === grid.layers - 1 && !grid.boundaryQuadFaceIds.has(c.qFaceId),
-  );
-  const botCandidates = grid.cells.filter(
-    (c) => c.layer === 0 && !grid.boundaryQuadFaceIds.has(c.qFaceId),
-  );
-  if (!topCandidates.length || !botCandidates.length) return null;
+  const startCell = topCells[Math.floor(rng() * topCells.length)]!;
+  const endCell = botCells[Math.floor(rng() * botCells.length)]!;
 
-  const startCell = topCandidates[Math.floor(rng() * topCandidates.length)]!;
-  const endCell = botCandidates[Math.floor(rng() * botCandidates.length)]!;
-  const startExit = pickHorizontalNeighbour(startCell, rng);
-  const endEntry = pickHorizontalNeighbour(endCell, rng);
+  // Force the first step out of start and last step into end to be horizontal
+  // — START has a side exit and END has a side entry, not vertical.
+  const startExit = pickHorizontalNeighbour(grid, startCell.id, rng);
+  const endEntry = pickHorizontalNeighbour(grid, endCell.id, rng);
   if (startExit < 0 || endEntry < 0) return null;
+  const afterStart = grid.cells[startCell.id]!.neighbours[startExit]!;
+  const beforeEnd = grid.cells[endCell.id]!.neighbours[endEntry]!;
 
-  const afterStart = startCell.sides[startExit]!;
-  const beforeEnd = endCell.sides[endEntry]!;
-  const middle = biasedBFS(grid, afterStart, beforeEnd, rng, new Set([startCell.id, endCell.id]));
+  const middle = bfs(grid, afterStart, beforeEnd, rng, new Set([startCell.id, endCell.id]));
   if (!middle) return null;
-  const pathCellIds = [startCell.id, ...middle, endCell.id];
+  const path = [startCell.id, ...middle, endCell.id];
 
-  // Assign a piece per cell.
-  const assignments: CellAssignment[] = grid.cells.map(() => EMPTY_ASSIGN);
-  const entries: (number | null)[] = new Array(pathCellIds.length).fill(null);
-  const exits: (number | null)[] = new Array(pathCellIds.length).fill(null);
-  for (let i = 0; i < pathCellIds.length - 1; i++) {
-    const a = grid.cells[pathCellIds[i]!]!;
-    const bId = pathCellIds[i + 1]!;
-    const d = dirFromTo(a, bId);
+  // Entry/exit directions for each path cell.
+  const entries: (number | null)[] = new Array(path.length).fill(null);
+  const exits: (number | null)[] = new Array(path.length).fill(null);
+  for (let i = 0; i < path.length - 1; i++) {
+    const a = grid.cells[path[i]!]!;
+    const bId = path[i + 1]!;
+    const d = a.neighbours.indexOf(bId);
     if (d < 0) return null;
     exits[i] = d;
-    entries[i + 1] =
-      d === DIR.T ? DIR.B : d === DIR.B ? DIR.T : a.sidesNeighbourEdge[d]!;
+    entries[i + 1] = OPP[d]!;
   }
 
-  for (let i = 0; i < pathCellIds.length; i++) {
+  const assignments: CellAssignment[] = grid.cells.map(() => EMPTY);
+  for (let i = 0; i < path.length; i++) {
+    const id = path[i]!;
     const entry = i === 0 ? DIR.T : entries[i]!;
-    const exit = i === pathCellIds.length - 1 ? null : exits[i]!;
-    const picked = pickPiece(entry, exit, i === 0, i === pathCellIds.length - 1, rng);
+    const exit = i === path.length - 1 ? null : exits[i]!;
+    const picked = pickPiece(entry, exit, i === 0, i === path.length - 1);
     if (!picked) return null;
-    assignments[pathCellIds[i]!] = picked;
+    assignments[id] = picked;
   }
-
-  return { assignments, pathCellIds, startCellId: startCell.id, endCellId: endCell.id };
+  return {
+    assignments,
+    pathCellIds: path,
+    startCellId: startCell.id,
+    endCellId: endCell.id,
+  };
 }
 
 // ---------------------------------------------------------------------------
-// Path walking
-// ---------------------------------------------------------------------------
 
-function pickHorizontalNeighbour(cell: PrismCell, rng: Rng): number {
+const OPP = [2, 3, 0, 1, 5, 4] as const;
+
+function pickHorizontalNeighbour(grid: Grid3D, cellId: number, rng: Rng): number {
+  const cell = grid.cells[cellId]!;
   const avail: number[] = [];
-  for (let i = 0; i < 4; i++) if (cell.sides[i]! >= 0) avail.push(i);
+  for (let d = 0; d < 4; d++) if (cell.neighbours[d]! >= 0) avail.push(d);
   if (!avail.length) return -1;
   return avail[Math.floor(rng() * avail.length)]!;
 }
 
-function biasedBFS(
-  grid: Grid3D,
-  startId: number,
-  endId: number,
-  rng: Rng,
-  blocked: Set<number>,
-): number[] | null {
+function bfs(grid: Grid3D, startId: number, endId: number, rng: Rng, blocked: Set<number> = new Set()): number[] | null {
   const prev = new Int32Array(grid.cells.length).fill(-1);
   const visited = new Uint8Array(grid.cells.length);
   visited[startId] = 1;
@@ -100,17 +96,19 @@ function biasedBFS(
     const c = queue.shift()!;
     if (c === endId) break;
     const cell = grid.cells[c]!;
-    const neighbours: number[] = [];
-    if (cell.bottom >= 0) neighbours.push(cell.bottom);
-    const sides: number[] = [];
-    for (let i = 0; i < 4; i++) if (cell.sides[i]! >= 0) sides.push(cell.sides[i]!);
-    for (let i = sides.length - 1; i > 0; i--) {
-      const j = Math.floor(rng() * (i + 1));
-      [sides[i], sides[j]] = [sides[j]!, sides[i]!];
+    // Preference: go down first, then sideways, never up.
+    const ordered: number[] = [];
+    if (cell.neighbours[DIR.B]! >= 0) ordered.push(cell.neighbours[DIR.B]!);
+    const horiz: number[] = [];
+    for (let d = 0; d < 4; d++) {
+      if (cell.neighbours[d]! >= 0) horiz.push(cell.neighbours[d]!);
     }
-    neighbours.push(...sides);
-    if (cell.top >= 0) neighbours.push(cell.top);
-    for (const n of neighbours) {
+    for (let i = horiz.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      [horiz[i], horiz[j]] = [horiz[j]!, horiz[i]!];
+    }
+    ordered.push(...horiz);
+    for (const n of ordered) {
       if (visited[n]) continue;
       visited[n] = 1;
       prev[n] = c;
@@ -124,88 +122,49 @@ function biasedBFS(
   return out;
 }
 
-function dirFromTo(from: PrismCell, toId: number): number {
-  if (from.top === toId) return DIR.T;
-  if (from.bottom === toId) return DIR.B;
-  for (let i = 0; i < 4; i++) if (from.sides[i] === toId) return i;
-  return -1;
-}
-
-// ---------------------------------------------------------------------------
-// Piece picker — turn (entry, exit) into (PieceName, rotation).
-// ---------------------------------------------------------------------------
-
 /**
- * Canonical rotation convention: a piece at rotation k has each face-i of the
- * rotated tile holding the mesh content originally at face (i−k). Equivalently
- * the original face-0 appears on face k, face-1 on (k+1)%4, etc.
- * So "rotate the piece until its canonical entry face lands on `eWorld`" is
- * just `k = (eWorld − canonicalEntry + 4) % 4`.
+ * Pick a (piece, rotation) given the entry/exit face indices (0..5).
+ * Rotation k of a piece moves its canonical face i to face (i+k)%4, so to
+ * place canonical entry face `ce` at world face `we` we set k = (we−ce)%4.
  */
 function pickPiece(
   entry: number,
   exit: number | null,
   isStart: boolean,
   isEnd: boolean,
-  rng: Rng,
 ): CellAssignment | null {
   if (isStart) {
     if (exit === null || exit === DIR.T || exit === DIR.B) return null;
-    return orient('START', 0, exit);
+    return { name: 'START', rotation: rot4(exit) };
   }
   if (isEnd) {
     if (entry === DIR.T || entry === DIR.B) return null;
-    return orient('END', 0, entry);
+    return { name: 'END', rotation: rot4(entry) };
   }
-  // Vertical pass-through
+  // vertical pass-through: T → B (or the reverse)
   if ((entry === DIR.T && exit === DIR.B) || (entry === DIR.B && exit === DIR.T)) {
     return { name: 'PIPE', rotation: 0 };
   }
-  // Top-in → side-out: CATCHER / WHEEL (and occasionally SPLITTER with one dead-leg)
-  if (entry === DIR.T && exit !== null && exit < 4) {
-    const roll = rng();
-    const piece: PieceName = roll < 0.12 ? 'WHEEL' : roll < 0.22 ? 'SPLITTER' : 'CATCHER';
-    if (piece === 'SPLITTER') {
-      // SPLITTER canonical exits at E(1) and W(3). We need one of them on `exit`.
-      // k such that (1+k)%4 == exit  →  k = (exit-1+4)%4
-      return { name: 'SPLITTER', rotation: (((exit - 1 + 4) % 4) as 0 | 1 | 2 | 3) };
-    }
-    return orient(piece, 0, exit);
-  }
-  // Side-in → bottom-out: DROP
+  // vertical transits with a horizontal side
   if (entry < 4 && exit === DIR.B) {
-    return orient('DROP', 0, entry);
+    // side → down: DROP oriented with its canonical N entry at the world entry face.
+    return { name: 'DROP', rotation: rot4(entry) };
   }
-  // Top-in → bottom-out covered by PIPE above; B-in → side-out is unusual (anti-gravity),
-  // treat it as CATCHER-style because the renderer doesn't care about direction.
-  if (entry === DIR.B && exit !== null && exit < 4) {
-    return orient('CATCHER', 0, exit);
+  if (entry === DIR.T && exit !== null && exit < 4) {
+    // drop-in at top → exit via a side: reuse DROP rotated so its side opening faces
+    // the exit (visual is an upside-down drop — OK for the "basic pieces" set).
+    return { name: 'DROP', rotation: rot4(exit) };
   }
-  // Side-in → top-out: reverse DROP visually
-  if (entry < 4 && exit === DIR.T) {
-    return orient('DROP', 0, entry);
-  }
-  // Horizontal entry → horizontal exit
+  // horizontal → horizontal
   if (entry < 4 && exit !== null && exit < 4) {
     const turn = (exit - entry + 4) % 4;
-    if (turn === 2) {
-      // straight through — slope occasionally, otherwise flat at the entry's height band
-      const pick = rng();
-      const name: PieceName = pick < 0.45 ? 'SLOPE_HL' : pick < 0.7 ? 'STRAIGHT_M' : pick < 0.85 ? 'STRAIGHT_L' : 'STRAIGHT_H';
-      return orient(name, 0, entry);
-    }
-    if (turn === 1) return orient('CURVE_R', 0, entry); // right turn from entry
-    if (turn === 3) return orient('CURVE_L', 0, entry); // left turn from entry
+    if (turn === 2) return { name: 'STRAIGHT', rotation: rot4(entry) };
+    if (turn === 1) return { name: 'CURVE_R', rotation: rot4(entry) };
+    if (turn === 3) return { name: 'CURVE_L', rotation: rot4(entry) };
   }
   return null;
 }
 
-/** Rotate piece `name` so its canonical entry face lines up with `worldEntry`. */
-function orient(name: PieceName, canonicalEntry: number, worldEntry: number): CellAssignment {
-  const piece = PIECE_BY_NAME[name];
-  if (!piece) throw new Error(`unknown piece ${name}`);
-  const k = ((worldEntry - canonicalEntry + 4) % 4) as 0 | 1 | 2 | 3;
-  // clamp for pieces that aren't full-4 rotation symmetric
-  const finalK = ((k % piece.rotations) as 0 | 1 | 2 | 3);
-  return { name, rotation: finalK };
+function rot4(k: number): 0 | 1 | 2 | 3 {
+  return (((k % 4) + 4) % 4) as 0 | 1 | 2 | 3;
 }

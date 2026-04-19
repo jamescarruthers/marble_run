@@ -9,15 +9,14 @@ import { buildTrack, TrackBuild } from '../geometry';
 import { Track } from './Track';
 import { Marble } from './Marble';
 import { Sky } from './Sky';
-import { Engine, NullEngine, RapierEngine, WheelState } from '../physics';
+import { Engine, NullEngine, RapierEngine } from '../physics';
 import { MARBLE_RADIUS, PALETTE } from '../constants';
-import { wheelMaterial } from './materials';
 
 function emptyTrack(): TrackBuild {
   return {
     meshes: [],
     collisionGeom: new THREE.BufferGeometry(),
-    dynamics: [],
+    dynamics: [] as never[],
     startPos: new THREE.Vector3(0, 2, 0),
     endPos: new THREE.Vector3(0, 0, 0),
     path: [new THREE.Vector3(0, 2, 0), new THREE.Vector3(0, 0, 0)],
@@ -48,12 +47,10 @@ export function Scene() {
   }, [seed]);
 
   const marbleRef = useRef<THREE.Mesh>(null!);
-  const wheelRefs = useRef<THREE.Mesh[]>([]);
   const scratch = useMemo(
     () => ({ pos: new THREE.Vector3(), quat: new THREE.Quaternion() }),
     [],
   );
-  const wheelScratch = useRef<WheelState[]>([]);
 
   useEffect(() => {
     if (runState === 'idle') engine.reset();
@@ -70,17 +67,6 @@ export function Scene() {
     if (marbleRef.current) {
       marbleRef.current.position.copy(scratch.pos);
       marbleRef.current.quaternion.copy(scratch.quat);
-    }
-    if (engine instanceof RapierEngine) {
-      engine.readWheels(wheelScratch.current);
-      for (let i = 0; i < wheelScratch.current.length; i++) {
-        const m = wheelRefs.current[i];
-        const s = wheelScratch.current[i];
-        if (m && s) {
-          m.position.copy(s.position);
-          m.quaternion.copy(s.quaternion);
-        }
-      }
     }
   });
 
@@ -130,20 +116,6 @@ export function Scene() {
       />
       <Environment preset="sunset" background={false} />
       <Track track={track} />
-      {track.dynamics.map((d, i) =>
-        d.kind === 'wheel' ? (
-          <mesh
-            key={i}
-            ref={(el) => {
-              if (el) wheelRefs.current[i] = el;
-            }}
-            geometry={d.visual}
-            material={wheelMaterial}
-            castShadow
-            receiveShadow
-          />
-        ) : null,
-      )}
       <Marble ref={marbleRef} />
       <Ground y={bbox.isEmpty() ? 0 : bbox.min.y - 0.05} />
       <OrbitControls target={target.toArray()} maxPolarAngle={Math.PI * 0.49} />

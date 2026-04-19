@@ -4,35 +4,33 @@ import { driveGenerate } from './wfc';
 import { buildTrack } from './geometry';
 import { serializeMJCF } from './physics';
 
-describe('grid pipeline', () => {
-  it('generates a mesh with quads', () => {
-    const g = buildGrid(1234, { chunkRadius: 2, layers: 3 });
-    expect(g.cells.length).toBeGreaterThan(0);
-    expect(g.mesh.faces.some((f) => f.verts.length === 4)).toBe(true);
+describe('cube grid', () => {
+  it('builds a W×D×Layers lattice with correct neighbour wiring', () => {
+    const g = buildGrid(1234, { width: 3, depth: 3, layers: 2 });
+    expect(g.cells.length).toBe(3 * 3 * 2);
+    // pick an interior cell on the top layer and sanity check its 6 neighbours
+    const c = g.cells[g.cellAt(1, 0, 1)]!;
+    expect(c.neighbours[0]).toBe(g.cellAt(1, 0, 2)); // N
+    expect(c.neighbours[5]).toBe(g.cellAt(1, 1, 1)); // B
+    expect(c.neighbours[4]).toBe(-1); // no layer above layer 0
   });
 });
 
 describe('driven generator', () => {
-  it('produces a connected piece assignment for several seeds', () => {
-    let solvedCount = 0;
+  it('produces a valid assignment for several seeds', () => {
+    let solved = 0;
     for (let seed = 1; seed <= 8; seed++) {
-      const g = buildGrid(seed, { chunkRadius: 2, layers: 3 });
+      const g = buildGrid(seed, { width: 4, depth: 4, layers: 3 });
       const res = driveGenerate(g);
       if (!res) continue;
-      solvedCount++;
+      solved++;
       expect(res.assignments.length).toBe(g.cells.length);
       expect(res.pathCellIds.length).toBeGreaterThanOrEqual(2);
-      const track = buildTrack(
-        g,
-        res.assignments,
-        res.pathCellIds,
-        res.startCellId,
-        res.endCellId,
-      );
+      const track = buildTrack(g, res.assignments, res.pathCellIds, res.startCellId, res.endCellId);
       expect(track.meshes.length).toBeGreaterThan(0);
       const xml = serializeMJCF(track);
       expect(xml).toContain('<mujoco');
     }
-    expect(solvedCount).toBeGreaterThan(4);
+    expect(solved).toBeGreaterThan(4);
   });
 });
