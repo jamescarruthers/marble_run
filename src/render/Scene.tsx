@@ -9,7 +9,7 @@ import { buildTrack, TrackBuild } from '../geometry';
 import { Track } from './Track';
 import { Marble } from './Marble';
 import { Sky } from './Sky';
-import { KinematicEngine } from '../physics/engine';
+import { Engine, KinematicEngine, RapierEngine } from '../physics';
 import { MARBLE_RADIUS, PALETTE } from '../constants';
 
 function emptyTrack(): TrackBuild {
@@ -36,13 +36,17 @@ export function Scene() {
   const { track, engine } = useMemo(() => {
     const grid = buildGrid(seed);
     const result = driveGenerate(grid);
-    if (!result) {
-      console.warn('driveGenerate failed; rendering fallback.');
-      const t = emptyTrack();
-      return { track: t, engine: new KinematicEngine(t, MARBLE_RADIUS) };
+    const t = result ? buildTrack(grid, result.pathCellIds) : emptyTrack();
+    let eng: Engine;
+    try {
+      eng = new RapierEngine(t, MARBLE_RADIUS);
+    } catch (err) {
+      // If WASM hasn't loaded yet (shouldn't happen because main.tsx awaits it)
+      // or the trough mesh was degenerate, fall back to the kinematic slider.
+      console.warn('Rapier engine failed, falling back to kinematic:', err);
+      eng = new KinematicEngine(t, MARBLE_RADIUS);
     }
-    const t = buildTrack(grid, result.pathCellIds);
-    return { track: t, engine: new KinematicEngine(t, MARBLE_RADIUS) };
+    return { track: t, engine: eng };
   }, [seed]);
 
   const marbleRef = useRef<THREE.Mesh>(null!);
