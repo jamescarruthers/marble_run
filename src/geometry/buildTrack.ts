@@ -1,30 +1,29 @@
 import * as THREE from 'three';
 import { Grid3D } from '../grid';
 import { CellAssignment } from '../wfc/drive';
-import { PIECE_BY_NAME, PieceDynamic } from './pieces';
-import { warpGeometry, warpPoint } from './warp';
+import { PIECE_BY_NAME } from './pieces';
 
 export interface TrackMesh {
-  /** Name of the authored piece this mesh came from — for material selection. */
   parent: string;
   geom: THREE.BufferGeometry;
 }
 
 export interface TrackBuild {
-  /** Per-cell visual BufferGeometries (already warped into world space). */
   meshes: TrackMesh[];
-  /** One combined indexed BufferGeometry used by Rapier as a trimesh collider. */
   collisionGeom: THREE.BufferGeometry;
-  /** Dynamic bodies extracted from special pieces (wheels). */
-  dynamics: PieceDynamic[];
-  /** Marble drop position (slightly above the START bell). */
+  /** Reserved for pieces that emit dynamic bodies (wheels, paddles). Empty today. */
+  dynamics: never[];
   startPos: THREE.Vector3;
   endPos: THREE.Vector3;
-  /** Debug: world-space waypoints along the path. */
   path: THREE.Vector3[];
   pathCellCount: number;
 }
 
+/**
+ * Place each path-cell's piece mesh at its world-space cell centre, rotated
+ * by k·90° around Y. No bilinear warp is needed — every cell is an identical
+ * axis-aligned cube, so a uniform scale + translate lines everything up.
+ */
 export function buildTrack(
   grid: Grid3D,
   assignments: CellAssignment[],
@@ -34,7 +33,6 @@ export function buildTrack(
 ): TrackBuild {
   const meshes: TrackMesh[] = [];
   const colliderSources: THREE.BufferGeometry[] = [];
-  const dynamics: PieceDynamic[] = [];
 
   for (let cellId = 0; cellId < assignments.length; cellId++) {
     const a = assignments[cellId]!;
@@ -44,33 +42,26 @@ export function buildTrack(
     const base = piece.build();
     if (!base.getAttribute('position')) continue;
     const cell = grid.cells[cellId]!;
-    const warped = warpGeometry(base, cell, a.rotation);
-    meshes.push({ parent: piece.name, geom: warped });
-    colliderSources.push(warped);
-
-    if (piece.buildDynamics) {
-      const origin = warpPoint(new THREE.Vector3(0, 0, 0), cell, a.rotation);
-      const above = warpPoint(new THREE.Vector3(0, 0.5, 0), cell, a.rotation);
-      const yAxis = above.clone().sub(origin).normalize();
-      dynamics.push(...piece.buildDynamics({ origin, yAxis }));
-    }
+    const placed = transformToCell(base, cell.centre, a.rotation, grid.scale);
+    meshes.push({ parent: piece.name, geom: placed });
+    colliderSources.push(placed);
   }
 
-  const collisionGeom = mergeIndexedGeoms(colliderSources);
+  const collisionGeom = mergeIndexed(colliderSources);
 
-  // Path waypoints come from cell centres (lifted a little toward the piece's
-  // typical height) — used by the camera framing and marble start position.
-  const path: THREE.Vector3[] = pathCellIds.map((id) => cellCentre(grid, id));
   const startCell = grid.cells[startCellId]!;
   const endCell = grid.cells[endCellId]!;
-  // Marble spawn point: inside the START cell, near the top, so it falls naturally into the bell.
-  const startPos = warpPoint(new THREE.Vector3(0, 0.35, 0), startCell, assignments[startCellId]!.rotation);
-  const endPos = cellCentre(grid, endCell.id);
+  const startPos = new THREE.Vector3(startCell.centre[0], startCell.centre[1] + grid.scale * 0.4, startCell.centre[2]);
+  const endPos = new THREE.Vector3(endCell.centre[0], endCell.centre[1], endCell.centre[2]);
+  const path = pathCellIds.map((id) => {
+    const c = grid.cells[id]!;
+    return new THREE.Vector3(c.centre[0], c.centre[1], c.centre[2]);
+  });
 
   return {
     meshes,
     collisionGeom,
-    dynamics,
+    dynamics: [] as never[],
     startPos,
     endPos,
     path,
@@ -78,41 +69,44 @@ export function buildTrack(
   };
 }
 
-function cellCentre(grid: Grid3D, cellId: number): THREE.Vector3 {
-  const c = grid.cells[cellId]!;
-  let x = 0;
-  let y = 0;
-  let z = 0;
-  for (const v of c.bottomQuad) {
-    x += v[0];
-    z += v[1];
-    y += v[2];
+/** Clone the unit-cube geometry, scale + rotate k·90° about Y, translate to `centre`. */
+function transformToCell(
+  geom: THREE.BufferGeometry,
+  centre: [number, number, number],
+  rotation: 0 | 1 | 2 | 3,
+  scale: number,
+): THREE.BufferGeometry {
+  const out = geom.clone();
+  const pos = out.getAttribute('position') as THREE.BufferAttribute;
+  const cosT = [1, 0, -1, 0][rotation]!;
+  const sinT = [0, 1, 0, -1][rotation]!;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const z = pos.getZ(i);
+    const rx = x * cosT + z * sinT;
+    const rz = -x * sinT + z * cosT;
+    pos.setXYZ(i, rx * scale + centre[0], y * scale + centre[1], rz * scale + centre[2]);
   }
-  for (const v of c.topQuad) {
-    x += v[0];
-    z += v[1];
-    y += v[2];
-  }
-  return new THREE.Vector3(x / 8, y / 8, z / 8);
+  pos.needsUpdate = true;
+  out.computeVertexNormals();
+  return out;
 }
 
-/** Merge many indexed BufferGeometries into one, preserving per-vertex position. */
-function mergeIndexedGeoms(geoms: THREE.BufferGeometry[]): THREE.BufferGeometry {
-  let vertTotal = 0;
-  let idxTotal = 0;
+function mergeIndexed(geoms: THREE.BufferGeometry[]): THREE.BufferGeometry {
+  let totalV = 0;
+  let totalI = 0;
   for (const g of geoms) {
-    const pos = g.getAttribute('position');
-    if (!pos) continue;
-    vertTotal += pos.count;
+    const p = g.getAttribute('position');
+    if (!p) continue;
+    totalV += p.count;
     const idx = g.getIndex();
-    idxTotal += idx ? idx.count : pos.count;
+    totalI += idx ? idx.count : p.count;
   }
-  if (vertTotal === 0) {
-    return new THREE.BufferGeometry();
-  }
-  const positions = new Float32Array(vertTotal * 3);
-  const normals = new Float32Array(vertTotal * 3);
-  const indices = new Uint32Array(idxTotal);
+  if (totalV === 0) return new THREE.BufferGeometry();
+  const positions = new Float32Array(totalV * 3);
+  const normals = new Float32Array(totalV * 3);
+  const indices = new Uint32Array(totalI);
   let vOff = 0;
   let iOff = 0;
   for (const g of geoms) {

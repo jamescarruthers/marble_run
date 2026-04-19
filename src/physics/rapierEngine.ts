@@ -6,17 +6,10 @@ import { Engine } from './engine';
 const FIXED_DT = 1 / 120;
 const MAX_SUBSTEPS = 8;
 
-export interface WheelState {
-  position: THREE.Vector3;
-  quaternion: THREE.Quaternion;
-  radius: number;
-}
-
 /**
  * Rigid-body physics marble. The combined tile-piece mesh is used as a static
  * trimesh collider so the marble bounces off the same surface the user sees.
- * A catch-all cuboid sits below the bbox to catch strays. Dynamic pieces
- * (wheels) become free-spinning cylinders constrained by a revolute joint.
+ * A catch-all cuboid sits below the bbox to catch strays.
  */
 export class RapierEngine implements Engine {
   private world: RAPIER.World;
@@ -25,7 +18,6 @@ export class RapierEngine implements Engine {
   private accum = 0;
   private finishedAt: number | null = null;
   private endPos: THREE.Vector3;
-  private wheels: Array<{ body: RAPIER.RigidBody; radius: number }> = [];
 
   constructor(track: TrackBuild, marbleRadius: number) {
     this.world = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
@@ -62,36 +54,6 @@ export class RapierEngine implements Engine {
       RAPIER.ColliderDesc.cuboid(40, 0.1, 40).setFriction(0.5).setRestitution(0.2),
       ground,
     );
-
-    // Dynamic wheels --------------------------------------------------------
-    for (const dyn of track.dynamics) {
-      if (dyn.kind !== 'wheel') continue;
-      const p = dyn.worldPos;
-      const wheelDesc = RAPIER.RigidBodyDesc.dynamic()
-        .setTranslation(p.x, p.y, p.z)
-        .setAngularDamping(0.3);
-      const wheelBody = this.world.createRigidBody(wheelDesc);
-      // Approximate the paddle wheel as a short thin cylinder about the y axis.
-      this.world.createCollider(
-        RAPIER.ColliderDesc.cylinder(0.05, dyn.radius)
-          .setFriction(0.3)
-          .setRestitution(0.35)
-          .setDensity(600),
-        wheelBody,
-      );
-      // Anchor it with a revolute joint to a tiny fixed stub so it spins in
-      // place about its y axis without translating.
-      const anchorBody = this.world.createRigidBody(
-        RAPIER.RigidBodyDesc.fixed().setTranslation(p.x, p.y, p.z),
-      );
-      const joint = RAPIER.JointData.revolute(
-        { x: 0, y: 0, z: 0 },
-        { x: 0, y: 0, z: 0 },
-        { x: 0, y: 1, z: 0 },
-      );
-      this.world.createImpulseJoint(joint, anchorBody, wheelBody, true);
-      this.wheels.push({ body: wheelBody, radius: dyn.radius });
-    }
 
     // Marble ----------------------------------------------------------------
     this.startPos = track.startPos.clone();
@@ -145,23 +107,6 @@ export class RapierEngine implements Engine {
     const r = this.marbleBody.rotation();
     out.pos.set(t.x, t.y, t.z);
     out.quat.set(r.x, r.y, r.z, r.w);
-  }
-
-  readWheels(out: WheelState[]): void {
-    for (let i = 0; i < this.wheels.length; i++) {
-      const w = this.wheels[i]!;
-      const t = w.body.translation();
-      const q = w.body.rotation();
-      let slot = out[i];
-      if (!slot) {
-        slot = { position: new THREE.Vector3(), quaternion: new THREE.Quaternion(), radius: w.radius };
-        out[i] = slot;
-      }
-      slot.position.set(t.x, t.y, t.z);
-      slot.quaternion.set(q.x, q.y, q.z, q.w);
-      slot.radius = w.radius;
-    }
-    out.length = this.wheels.length;
   }
 
   isFinished(): boolean {
