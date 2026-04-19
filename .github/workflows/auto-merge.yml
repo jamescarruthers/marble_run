@@ -1,10 +1,12 @@
 name: Auto-merge dev branch to main
 
 # Fast-forwards (or creates a merge commit on) `main` every time a push lands
-# on a `claude/**` development branch, provided the build + tests pass. This
-# is the "every commit goes straight to main" workflow. If you don't want
-# something to auto-ship, either push to a branch that doesn't match the
-# pattern or disable this workflow from the Actions tab.
+# on a `claude/**` development branch, provided the build + tests pass, then
+# deploys the resulting main to GitHub Pages.
+#
+# Deploy is inlined into this workflow because a push to main made with
+# GITHUB_TOKEN does not trigger other workflows — so the standalone pages.yml
+# would never fire in this auto-merge flow.
 
 on:
   push:
@@ -14,6 +16,8 @@ on:
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
 concurrency:
   group: auto-merge-${{ github.ref }}
@@ -38,24 +42,51 @@ jobs:
   merge:
     needs: verify
     runs-on: ubuntu-latest
+    outputs:
+      merged_sha: ${{ steps.merged.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          # Write-access token so we can push main
           token: ${{ secrets.GITHUB_TOKEN }}
       - name: Configure git identity
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
       - name: Fast-forward main to ${{ needs.verify.outputs.sha }}
+        id: merged
         run: |
           git fetch origin main
           git checkout main
-          # Try a fast-forward first; if main has diverged, fall back to a merge commit.
           if git merge --ff-only "${{ needs.verify.outputs.sha }}"; then
             echo "fast-forwarded"
           else
             git merge --no-ff -m "Auto-merge ${{ github.ref_name }} (${GITHUB_SHA::7})" "${{ needs.verify.outputs.sha }}"
           fi
           git push origin main
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: merge
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.merge.outputs.merged_sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+        env:
+          VITE_BASE: /${{ github.event.repository.name }}/
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+      - id: deployment
+        uses: actions/deploy-pages@v4
