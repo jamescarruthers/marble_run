@@ -1,0 +1,61 @@
+name: Auto-merge dev branch to main
+
+# Fast-forwards (or creates a merge commit on) `main` every time a push lands
+# on a `claude/**` development branch, provided the build + tests pass. This
+# is the "every commit goes straight to main" workflow. If you don't want
+# something to auto-ship, either push to a branch that doesn't match the
+# pattern or disable this workflow from the Actions tab.
+
+on:
+  push:
+    branches:
+      - 'claude/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: auto-merge-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx tsc -b --noEmit
+      - run: npm test
+      - run: npm run build
+
+  merge:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Write-access token so we can push main
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - name: Fast-forward main to ${{ needs.verify.outputs.sha }}
+        run: |
+          git fetch origin main
+          git checkout main
+          # Try a fast-forward first; if main has diverged, fall back to a merge commit.
+          if git merge --ff-only "${{ needs.verify.outputs.sha }}"; then
+            echo "fast-forwarded"
+          else
+            git merge --no-ff -m "Auto-merge ${{ github.ref_name }} (${GITHUB_SHA::7})" "${{ needs.verify.outputs.sha }}"
+          fi
+          git push origin main

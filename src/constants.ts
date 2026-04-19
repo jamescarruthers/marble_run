@@ -10,15 +10,21 @@ export const PALETTE = {
   shadow: '#2F2440',
 } as const;
 
+/** World-unit scale factor applied to all grid positions. Bigger = chunkier tiles. */
+export const GRID_SCALE = 2.0;
+
 export const GRID_DEFAULTS = {
   chunkRadius: 3,
   layers: 4,
   layerHeight: 1.0,
-  relaxIterations: 60,
-  relaxStep: 0.15,
+  relaxIterations: 80,
+  relaxStep: 0.12,
 };
 
-export const MARBLE_RADIUS = 0.06;
+export const MARBLE_RADIUS = 0.12;
+
+/** Radius of the track tube rendered into each cell (before grid scaling). */
+export const TRACK_TUBE_RADIUS = 0.16;
 
 /** Height bands in unit-cube y coords (before warp). */
-export const HEIGHT_BANDS = { L: 0.16, M: 0.5, H: 0.84 } as const;
+export const HEIGHT_BANDS = { L: 0.22, M: 0.5, H: 0.78 } as const;

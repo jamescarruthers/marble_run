@@ -7,9 +7,18 @@ export const trackMaterial = new THREE.MeshPhysicalMaterial({
   clearcoat: 0.3,
   clearcoatRoughness: 0.8,
   sheen: 0.2,
-  // Trough is open on top and the user sees the concave inside; render both faces
-  // so the inner surface also catches light.
-  side: THREE.DoubleSide,
+});
+
+export const wheelMaterial = new THREE.MeshPhysicalMaterial({
+  color: new THREE.Color(PALETTE.butter),
+  roughness: 0.55,
+  clearcoat: 0.4,
+});
+
+export const splitterMaterial = new THREE.MeshPhysicalMaterial({
+  color: new THREE.Color(PALETTE.lavender),
+  roughness: 0.7,
+  clearcoat: 0.3,
 });
 
 export const solidMaterial = new THREE.MeshPhysicalMaterial({
@@ -42,5 +51,7 @@ export function materialForParent(parent: string): THREE.Material {
   if (parent === 'SOLID') return solidMaterial;
   if (parent === 'START') return startMaterial;
   if (parent === 'END') return endMaterial;
+  if (parent === 'WHEEL') return wheelMaterial;
+  if (parent === 'SPLITTER') return splitterMaterial;
   return trackMaterial;
 }

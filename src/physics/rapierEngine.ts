@@ -6,14 +6,17 @@ import { Engine } from './engine';
 const FIXED_DT = 1 / 120;
 const MAX_SUBSTEPS = 8;
 
+export interface WheelState {
+  position: THREE.Vector3;
+  quaternion: THREE.Quaternion;
+  radius: number;
+}
+
 /**
- * Rigid-body physics marble. The trough BufferGeometry is reused verbatim as a
- * static trimesh collider so the marble bounces off the actual surface the
- * user sees. A big catch-all ground plane is placed well below the track so
- * marbles that fly out of the open rim don't fall forever.
- *
- * Rapier's trimesh colliders are infinitely thin — fast-moving spheres can
- * tunnel — so we enable CCD on the marble.
+ * Rigid-body physics marble. The combined tile-piece mesh is used as a static
+ * trimesh collider so the marble bounces off the same surface the user sees.
+ * A catch-all cuboid sits below the bbox to catch strays. Dynamic pieces
+ * (wheels) become free-spinning cylinders constrained by a revolute joint.
  */
 export class RapierEngine implements Engine {
   private world: RAPIER.World;
@@ -22,42 +25,75 @@ export class RapierEngine implements Engine {
   private accum = 0;
   private finishedAt: number | null = null;
   private endPos: THREE.Vector3;
+  private wheels: Array<{ body: RAPIER.RigidBody; radius: number }> = [];
 
   constructor(track: TrackBuild, marbleRadius: number) {
     this.world = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
 
-    // Trough trimesh ---------------------------------------------------------
-    const pos = track.tube.getAttribute('position') as THREE.BufferAttribute;
-    const index = track.tube.getIndex();
-    if (!index) throw new Error('track tube geometry must be indexed');
-    const verts = new Float32Array(pos.count * 3);
-    for (let i = 0; i < pos.count; i++) {
-      verts[i * 3] = pos.getX(i);
-      verts[i * 3 + 1] = pos.getY(i);
-      verts[i * 3 + 2] = pos.getZ(i);
+    // Static trimesh of all piece geometry ----------------------------------
+    const pos = track.collisionGeom.getAttribute('position') as THREE.BufferAttribute | undefined;
+    const index = track.collisionGeom.getIndex();
+    if (pos && index) {
+      const verts = new Float32Array(pos.count * 3);
+      for (let i = 0; i < pos.count; i++) {
+        verts[i * 3] = pos.getX(i);
+        verts[i * 3 + 1] = pos.getY(i);
+        verts[i * 3 + 2] = pos.getZ(i);
+      }
+      const idx = new Uint32Array(index.count);
+      for (let i = 0; i < index.count; i++) idx[i] = index.getX(i);
+      const body = this.world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
+      this.world.createCollider(
+        RAPIER.ColliderDesc.trimesh(verts, idx).setFriction(0.35).setRestitution(0.25),
+        body,
+      );
     }
-    const idx = new Uint32Array(index.count);
-    for (let i = 0; i < index.count; i++) idx[i] = index.getX(i);
 
-    const troughBody = this.world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
-    this.world.createCollider(
-      RAPIER.ColliderDesc.trimesh(verts, idx).setFriction(0.35).setRestitution(0.25),
-      troughBody,
-    );
-
-    // Safety net ground ------------------------------------------------------
+    // Safety net ground -----------------------------------------------------
     const box = new THREE.Box3();
     for (const p of track.path) box.expandByPoint(p);
-    const groundY = (box.isEmpty() ? 0 : box.min.y) - 2.0;
+    box.expandByPoint(track.startPos);
+    box.expandByPoint(track.endPos);
+    const groundY = (box.isEmpty() ? 0 : box.min.y) - 2.5;
     const ground = this.world.createRigidBody(
       RAPIER.RigidBodyDesc.fixed().setTranslation(0, groundY, 0),
     );
     this.world.createCollider(
-      RAPIER.ColliderDesc.cuboid(30, 0.1, 30).setFriction(0.5).setRestitution(0.2),
+      RAPIER.ColliderDesc.cuboid(40, 0.1, 40).setFriction(0.5).setRestitution(0.2),
       ground,
     );
 
-    // Marble -----------------------------------------------------------------
+    // Dynamic wheels --------------------------------------------------------
+    for (const dyn of track.dynamics) {
+      if (dyn.kind !== 'wheel') continue;
+      const p = dyn.worldPos;
+      const wheelDesc = RAPIER.RigidBodyDesc.dynamic()
+        .setTranslation(p.x, p.y, p.z)
+        .setAngularDamping(0.3);
+      const wheelBody = this.world.createRigidBody(wheelDesc);
+      // Approximate the paddle wheel as a short thin cylinder about the y axis.
+      this.world.createCollider(
+        RAPIER.ColliderDesc.cylinder(0.05, dyn.radius)
+          .setFriction(0.3)
+          .setRestitution(0.35)
+          .setDensity(600),
+        wheelBody,
+      );
+      // Anchor it with a revolute joint to a tiny fixed stub so it spins in
+      // place about its y axis without translating.
+      const anchorBody = this.world.createRigidBody(
+        RAPIER.RigidBodyDesc.fixed().setTranslation(p.x, p.y, p.z),
+      );
+      const joint = RAPIER.JointData.revolute(
+        { x: 0, y: 0, z: 0 },
+        { x: 0, y: 0, z: 0 },
+        { x: 0, y: 1, z: 0 },
+      );
+      this.world.createImpulseJoint(joint, anchorBody, wheelBody, true);
+      this.wheels.push({ body: wheelBody, radius: dyn.radius });
+    }
+
+    // Marble ----------------------------------------------------------------
     this.startPos = track.startPos.clone();
     this.endPos = track.endPos.clone();
     const marbleDesc = RAPIER.RigidBodyDesc.dynamic()
@@ -88,7 +124,7 @@ export class RapierEngine implements Engine {
 
   step(dtWall: number): void {
     this.world.timestep = FIXED_DT;
-    this.accum += Math.min(0.1, dtWall); // cap to avoid spiral-of-death after tab blur
+    this.accum += Math.min(0.1, dtWall);
     let steps = 0;
     while (this.accum >= FIXED_DT && steps < MAX_SUBSTEPS) {
       this.world.step();
@@ -100,7 +136,7 @@ export class RapierEngine implements Engine {
       const dx = t.x - this.endPos.x;
       const dy = t.y - this.endPos.y;
       const dz = t.z - this.endPos.z;
-      if (dx * dx + dy * dy + dz * dz < 0.25 * 0.25) this.finishedAt = performance.now();
+      if (dx * dx + dy * dy + dz * dz < 0.35 * 0.35) this.finishedAt = performance.now();
     }
   }
 
@@ -111,12 +147,28 @@ export class RapierEngine implements Engine {
     out.quat.set(r.x, r.y, r.z, r.w);
   }
 
+  readWheels(out: WheelState[]): void {
+    for (let i = 0; i < this.wheels.length; i++) {
+      const w = this.wheels[i]!;
+      const t = w.body.translation();
+      const q = w.body.rotation();
+      let slot = out[i];
+      if (!slot) {
+        slot = { position: new THREE.Vector3(), quaternion: new THREE.Quaternion(), radius: w.radius };
+        out[i] = slot;
+      }
+      slot.position.set(t.x, t.y, t.z);
+      slot.quaternion.set(q.x, q.y, q.z, q.w);
+      slot.radius = w.radius;
+    }
+    out.length = this.wheels.length;
+  }
+
   isFinished(): boolean {
     return this.finishedAt !== null;
   }
 
   dispose(): void {
-    // Rapier World owns all bodies/colliders; freeing it releases the lot.
     this.world.free();
   }
 }
