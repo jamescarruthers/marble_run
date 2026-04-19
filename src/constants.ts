@@ -25,5 +25,9 @@ export const MARBLE_RADIUS = 0.11;
 export const TILE_THICKNESS = 0.22;
 /** Full width of the carved groove in unit-cube coords. */
 export const GROOVE_WIDTH = 0.34;
-/** How deep the groove dips below the slab's top face. */
+/** How deep the groove dips below the slab's tilted top face. */
 export const GROOVE_DEPTH = 0.15;
+/** World-space vertical drop between consecutive path tiles — gives the marble
+ *  a continuous downward gradient. Each tile's groove is angled so its exit
+ *  edge sits exactly this far below its entry edge. */
+export const DROP_PER_TILE = 0.5;

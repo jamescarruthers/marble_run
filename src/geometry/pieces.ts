@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GROOVE_DEPTH, GROOVE_WIDTH, TILE_THICKNESS } from '../constants';
+import { DROP_PER_TILE, GRID_SCALE, GROOVE_DEPTH, GROOVE_WIDTH, TILE_THICKNESS } from '../constants';
 
 /**
  * Pieces are shallow unit-cube tiles (a thin slab at the bottom of the cell
@@ -20,27 +20,44 @@ export interface Piece {
 }
 
 /**
- * Approximate shortest distance from point (px, pz) to the open polyline
- * defined by `line`. Good enough for small N (≤ a few points).
+ * Closest-point info from (px, pz) onto the open polyline `line`.
+ * Returns the perpendicular distance plus the arc-length parameter `s`
+ * (0 at the start of the line, totalLength at the end). Used both for
+ * groove carving (depth based on `d`) and for slab tilt (height based on `s`).
  */
-function distToPolyline(px: number, pz: number, line: ReadonlyArray<readonly [number, number]>): number {
+function closestOnPolyline(
+  px: number,
+  pz: number,
+  line: ReadonlyArray<readonly [number, number]>,
+): { d: number; s: number; total: number } {
   let best = Infinity;
+  let bestS = 0;
+  let total = 0;
+  for (let i = 0; i < line.length - 1; i++) {
+    const [ax, az] = line[i]!;
+    const [bx, bz] = line[i + 1]!;
+    total += Math.hypot(bx - ax, bz - az);
+  }
+  let acc = 0;
   for (let i = 0; i < line.length - 1; i++) {
     const [ax, az] = line[i]!;
     const [bx, bz] = line[i + 1]!;
     const dx = bx - ax;
     const dz = bz - az;
+    const segLen = Math.hypot(dx, dz);
     const len2 = dx * dx + dz * dz;
     let t = len2 > 0 ? ((px - ax) * dx + (pz - az) * dz) / len2 : 0;
     t = Math.max(0, Math.min(1, t));
     const cx = ax + t * dx;
     const cz = az + t * dz;
-    const ex = px - cx;
-    const ez = pz - cz;
-    const d = Math.sqrt(ex * ex + ez * ez);
-    if (d < best) best = d;
+    const d = Math.hypot(px - cx, pz - cz);
+    if (d < best) {
+      best = d;
+      bestS = acc + t * segLen;
+    }
+    acc += segLen;
   }
-  return best;
+  return { d: best, s: bestS, total: total || 1 };
 }
 
 /** Densify a centerline by linear interpolation so that the distance lookup
@@ -60,37 +77,41 @@ function densify(line: ReadonlyArray<readonly [number, number]>, steps = 10): Ar
 }
 
 /**
- * Build the tile mesh for a given groove centerline. Produces an indexed
- * BufferGeometry with:
- *   - a res×res top surface (with dipped groove)
- *   - four side walls from the top edge down to the slab bottom
- *   - a flat bottom face
+ * Build the tile mesh for a given groove centerline.
  *
- * All coordinates are in the unit cube [-0.5, 0.5]^3; the slab top is at y=0
- * and the bottom is at y=−TILE_THICKNESS.
+ *   - The slab top **tilts** along the centerline: the entry edge sits at y=0,
+ *     the exit edge at y = −dropUC (where dropUC = DROP_PER_TILE / GRID_SCALE).
+ *     Each top-grid vertex's tilt y is its arc-length parameter `s/total`
+ *     interpolated between the two ends.
+ *   - The groove dips a uniform GROOVE_DEPTH below that tilted slab top
+ *     wherever the vertex is within halfW of the centerline.
+ *   - The slab is a constant-thickness wedge: bottom = top − TILE_THICKNESS.
+ *
+ * Result: consecutive tiles offset by DROP_PER_TILE in world Y and rotated to
+ * face the next path step produce one continuous downhill groove.
  */
 function buildTileMesh(centerline: ReadonlyArray<readonly [number, number]>): THREE.BufferGeometry {
   const res = 28;
   const halfW = GROOVE_WIDTH / 2;
+  const dropUC = DROP_PER_TILE / GRID_SCALE; // wedge drop in unit-cube units
   const line = densify(centerline, 8);
 
-  // Top grid of vertices with y dipped where close to the centerline.
   const h = res + 1;
-  const topY = new Float32Array(h * h);
+  const slabTop = new Float32Array(h * h);
   const positions: number[] = [];
   for (let i = 0; i < h; i++) {
     for (let j = 0; j < h; j++) {
       const x = -0.5 + i / res;
       const z = -0.5 + j / res;
-      const d = distToPolyline(x, z, line);
-      let y = 0;
+      const { d, s, total } = closestOnPolyline(x, z, line);
+      const tilt = -dropUC * (s / total);
+      let y = tilt;
       if (d < halfW) {
-        // concave half-circle, gentle at the rim, steepest at the centre.
         const t = d / halfW;
         const arc = Math.sqrt(Math.max(0, 1 - t * t));
-        y = -arc * GROOVE_DEPTH;
+        y = tilt - arc * GROOVE_DEPTH;
       }
-      topY[i * h + j] = y;
+      slabTop[i * h + j] = tilt;
       positions.push(x, y, z);
     }
   }
@@ -105,21 +126,21 @@ function buildTileMesh(centerline: ReadonlyArray<readonly [number, number]>): TH
     }
   }
 
-  // Side walls — one quad strip per tile side, following the dipped top profile.
-  // Each side has (res+1) top samples; the bottom is a single Y.
-  const bottomY = -TILE_THICKNESS;
+  // Side walls and bottom: bottom Y is the slab-top at that point minus
+  // TILE_THICKNESS, so the slab is a constant-thickness wedge.
   const ring = res + 1;
   const addSideStrip = (topIdxs: number[]): void => {
     const base = positions.length / 3;
-    // push top verts (reuse positions for normals convenience)
     for (let k = 0; k < ring; k++) {
       const ti = topIdxs[k]!;
       positions.push(positions[ti * 3]!, positions[ti * 3 + 1]!, positions[ti * 3 + 2]!);
     }
-    // bottom verts
     for (let k = 0; k < ring; k++) {
       const ti = topIdxs[k]!;
-      positions.push(positions[ti * 3]!, bottomY, positions[ti * 3 + 2]!);
+      const x = positions[ti * 3]!;
+      const z = positions[ti * 3 + 2]!;
+      const slabY = slabTop[Math.floor(ti / h) * h + (ti % h)] ?? 0;
+      positions.push(x, slabY - TILE_THICKNESS, z);
     }
     for (let k = 0; k < ring - 1; k++) {
       const t0 = base + k;
@@ -129,21 +150,18 @@ function buildTileMesh(centerline: ReadonlyArray<readonly [number, number]>): TH
       indices.push(t0, b0, t1, t1, b0, b1);
     }
   };
-  // S side (z = -0.5): j=0, i varies 0..res
   addSideStrip(Array.from({ length: ring }, (_, k) => k * h + 0));
-  // E side (x = +0.5): i=res, j varies
   addSideStrip(Array.from({ length: ring }, (_, k) => res * h + k));
-  // N side (z = +0.5): j=res, i varies (reversed for outward normal)
   addSideStrip(Array.from({ length: ring }, (_, k) => (res - k) * h + res));
-  // W side (x = -0.5): i=0, j varies (reversed)
   addSideStrip(Array.from({ length: ring }, (_, k) => 0 * h + (res - k)));
 
-  // Flat bottom face (two triangles).
+  // Wedge bottom face: each corner Y matches that corner's slab top minus thickness.
+  const cornerY = (i: number, j: number): number => (slabTop[i * h + j] ?? 0) - TILE_THICKNESS;
   const bl = positions.length / 3;
-  positions.push(-0.5, bottomY, -0.5);
-  positions.push(0.5, bottomY, -0.5);
-  positions.push(0.5, bottomY, 0.5);
-  positions.push(-0.5, bottomY, 0.5);
+  positions.push(-0.5, cornerY(0, 0), -0.5);
+  positions.push(0.5, cornerY(res, 0), -0.5);
+  positions.push(0.5, cornerY(res, res), 0.5);
+  positions.push(-0.5, cornerY(0, res), 0.5);
   indices.push(bl, bl + 2, bl + 1, bl, bl + 3, bl + 2);
 
   const g = new THREE.BufferGeometry();

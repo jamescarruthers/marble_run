@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { DROP_PER_TILE } from '../constants';
 import { Grid3D } from '../grid';
 import { CellAssignment } from '../wfc/drive';
 import { PIECE_BY_NAME } from './pieces';
@@ -34,6 +35,14 @@ export function buildTrack(
   const meshes: TrackMesh[] = [];
   const colliderSources: THREE.BufferGeometry[] = [];
 
+  // Each path cell sits DROP_PER_TILE world units below the previous one so
+  // their tilted groove edges line up into one continuous gradient. Cells
+  // that aren't on the path stay at the grid's flat baseline (y from cell.centre).
+  const pathYOffset = new Map<number, number>();
+  for (let i = 0; i < pathCellIds.length; i++) {
+    pathYOffset.set(pathCellIds[i]!, -i * DROP_PER_TILE);
+  }
+
   for (let cellId = 0; cellId < assignments.length; cellId++) {
     const a = assignments[cellId]!;
     if (a.name === 'EMPTY') continue;
@@ -42,7 +51,9 @@ export function buildTrack(
     const base = piece.build();
     if (!base.getAttribute('position')) continue;
     const cell = grid.cells[cellId]!;
-    const placed = transformToCell(base, cell.centre, a.rotation, grid.scale);
+    const yOff = pathYOffset.get(cellId) ?? 0;
+    const centre: [number, number, number] = [cell.centre[0], cell.centre[1] + yOff, cell.centre[2]];
+    const placed = transformToCell(base, centre, a.rotation, grid.scale);
     meshes.push({ parent: piece.name, geom: placed });
     colliderSources.push(placed);
   }
@@ -51,11 +62,14 @@ export function buildTrack(
 
   const startCell = grid.cells[startCellId]!;
   const endCell = grid.cells[endCellId]!;
-  const startPos = new THREE.Vector3(startCell.centre[0], startCell.centre[1] + grid.scale * 0.4, startCell.centre[2]);
-  const endPos = new THREE.Vector3(endCell.centre[0], endCell.centre[1], endCell.centre[2]);
-  const path = pathCellIds.map((id) => {
+  const startY = startCell.centre[1] + (pathYOffset.get(startCellId) ?? 0);
+  const endY = endCell.centre[1] + (pathYOffset.get(endCellId) ?? 0);
+  // Marble drops in from above the START tile's bell so it can fall into the funnel.
+  const startPos = new THREE.Vector3(startCell.centre[0], startY + grid.scale * 0.6, startCell.centre[2]);
+  const endPos = new THREE.Vector3(endCell.centre[0], endY, endCell.centre[2]);
+  const path = pathCellIds.map((id, i) => {
     const c = grid.cells[id]!;
-    return new THREE.Vector3(c.centre[0], c.centre[1], c.centre[2]);
+    return new THREE.Vector3(c.centre[0], c.centre[1] - i * DROP_PER_TILE, c.centre[2]);
   });
 
   return {
