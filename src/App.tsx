@@ -8,7 +8,11 @@ export default function App() {
     <div className="w-full h-full relative">
       <Canvas
         shadows
-        camera={{ position: [6, 6, 6], fov: 40 }}
+        // Classic isometric: orthographic projection with the camera at a 45°
+        // yaw and ~35.264° pitch. The Scene's own useEffect finalises the exact
+        // position + zoom against the track bbox.
+        orthographic
+        camera={{ position: [12, 12, 12], zoom: 80, near: -100, far: 500 }}
         dpr={[1, 1.5]}
       >
         <Suspense fallback={null}>

@@ -10,21 +10,20 @@ export const PALETTE = {
   shadow: '#2F2440',
 } as const;
 
-/** World-unit scale factor applied to all grid positions. Bigger = chunkier tiles. */
+/** World-unit size of one tile. */
 export const GRID_SCALE = 2.0;
 
 export const GRID_DEFAULTS = {
-  chunkRadius: 3,
-  layers: 4,
-  layerHeight: 1.0,
-  relaxIterations: 80,
-  relaxStep: 0.12,
+  width: 6,
+  depth: 6,
+  layers: 1,
 };
 
-export const MARBLE_RADIUS = 0.12;
+export const MARBLE_RADIUS = 0.11;
 
-/** Radius of the track tube rendered into each cell (before grid scaling). */
-export const TRACK_TUBE_RADIUS = 0.16;
-
-/** Height bands in unit-cube y coords (before warp). */
-export const HEIGHT_BANDS = { L: 0.22, M: 0.5, H: 0.78 } as const;
+/** Thickness of a tile slab (y span) in unit-cube coords before GRID_SCALE. */
+export const TILE_THICKNESS = 0.22;
+/** Full width of the carved groove in unit-cube coords. */
+export const GROOVE_WIDTH = 0.34;
+/** How deep the groove dips below the slab's top face. */
+export const GROOVE_DEPTH = 0.15;
